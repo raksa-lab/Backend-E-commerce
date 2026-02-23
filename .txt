@@ -1,0 +1,21 @@
+ecommerce-backend/
+│
+├── src/
+│   ├── config/
+│   ├── controllers/
+│   ├── routes/
+│   ├── models/
+│   ├── services/
+│   ├── middlewares/
+│   ├── utils/
+│   ├── validations/
+│   ├── database/
+│   ├── app.js
+│   └── server.js
+│
+├── uploads/
+├── tests/
+├── .env
+├── .gitignore
+├── package.json
+└── README.md
