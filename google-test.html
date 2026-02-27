@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+</head>
+<body>
+
+<h2>Google Login Test</h2>
+
+<div id="g_id_onload"
+     data-client_id="591786209039-abkllrjlvlhoco940incct09ilomdbd0.apps.googleusercontent.com"
+     data-callback="handleCredentialResponse">
+</div>
+
+<div class="g_id_signin"></div>
+
+<script>
+function handleCredentialResponse(response) {
+  console.log("COPY THIS TOKEN:");
+  console.log(response.credential);
+  alert("Open console (F12) and copy the token");
+}
+</script>
+
+</body>
+</html>
