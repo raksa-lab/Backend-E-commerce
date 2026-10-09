@@ -10,3 +10,13 @@ exports.create = async (payload) => {
   if (error) throw error;
   return data;
 };
+
+exports.findAllByOrder = async (orderId) => {
+  const { data, error } = await supabase
+    .from('order_items')
+    .select('*')
+    .eq('order_id', orderId);
+
+  if (error) throw error;
+  return data || [];
+};

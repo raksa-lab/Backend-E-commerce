@@ -6,8 +6,38 @@ exports.create = (data) =>
 exports.findByUser = (userId) =>
   supabase.from('user_addresses').select('*').eq('user_id', userId);
 
-exports.update = (id, data) =>
-  supabase.from('user_addresses').update(data).eq('id', id);
+exports.findByIdForUser = async (id, userId) => {
+  const { data, error } = await supabase
+    .from('user_addresses')
+    .select('*')
+    .eq('id', id)
+    .eq('user_id', userId)
+    .maybeSingle();
 
-exports.delete = (id) =>
-  supabase.from('user_addresses').delete().eq('id', id);
+  if (error) throw error;
+  return data;
+};
+
+exports.updateForUser = async (id, userId, data) => {
+  const { data: rows, error } = await supabase
+    .from('user_addresses')
+    .update(data)
+    .eq('id', id)
+    .eq('user_id', userId)
+    .select('*');
+
+  if (error) throw error;
+  return rows || [];
+};
+
+exports.deleteForUser = async (id, userId) => {
+  const { data, error } = await supabase
+    .from('user_addresses')
+    .delete()
+    .eq('id', id)
+    .eq('user_id', userId)
+    .select('*');
+
+  if (error) throw error;
+  return data || [];
+};

@@ -1,9 +1,11 @@
 const router = require('express').Router();
 const c = require('../controllers/variant.controller');
+const { protect } = require('../middlewares/auth.middleware');
+const { isAdmin } = require('../middlewares/role.middleware');
 
-router.post('/', c.create);
 router.get('/', c.getAll);
-router.put('/:id', c.update);
-router.delete('/:id', c.remove);
+router.post('/', protect, isAdmin, c.create);
+router.put('/:id', protect, isAdmin, c.update);
+router.delete('/:id', protect, isAdmin, c.remove);
 
 module.exports = router;
