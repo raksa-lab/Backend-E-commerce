@@ -11,6 +11,7 @@ module.exports = {
   CartItem: require('./CartItem'),
   Order: require('./Order'),
   OrderItem: require('./OrderItem'),
+  OrderStatusHistory: require('./OrderStatusHistory'),
   InventoryLog: require('./InventoryLog'),
   InventoryMovement: require('./InventoryMovement'),
   Payment: require('./Payment'),

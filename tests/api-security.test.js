@@ -40,6 +40,8 @@ const baseTables = {
   order_items: [
     { id: ids.aliceOrderItem, order_id: ids.aliceOrder, variant_id: ids.variant, quantity: 1, price: 12.5 },
   ],
+  inventory_movements: [],
+  order_status_history: [],
 };
 
 let tables;
@@ -203,8 +205,32 @@ const supabase = {
       const total = orderItems.reduce((sum, item) => sum + Number(item.price) * item.quantity, 0);
       const order = { id: crypto.randomUUID(), user_id: args.p_user_id, address_id: args.p_address_id, total_amount: total, final_amount: total, status: 'pending' };
       tables.orders.push(order);
+      tables.order_status_history.push({ id: crypto.randomUUID(), order_id: order.id, from_status: null, to_status: 'pending', actor_id: args.p_user_id, note: 'Order created', created_at: new Date().toISOString() });
       tables.order_items.push(...orderItems.map((item) => ({ id: crypto.randomUUID(), order_id: order.id, variant_id: item.variant_id, quantity: item.quantity, price: item.price })));
       tables.cart_items = tables.cart_items.filter((row) => row.cart_id !== cart.id);
+      return { data: order, error: null };
+    }
+    if (name === 'change_order_status') {
+      const order = tables.orders.find((row) => row.id === args.p_order_id);
+      if (!order) return { data: null, error: { code: 'P0002', message: 'Order not found' } };
+      const isAdmin = args.p_actor_role === 'admin';
+      if (!isAdmin && (order.user_id !== args.p_actor_id || args.p_target_status !== 'cancelled')) {
+        return { data: null, error: { code: 'P0002', message: 'Order not found' } };
+      }
+      const allowed = args.p_target_status === 'cancelled'
+        ? (isAdmin ? ['pending', 'processing'] : ['pending']).includes(order.status)
+        : isAdmin && ({ pending: 'processing', processing: 'shipped', shipped: 'delivered' }[order.status] === args.p_target_status);
+      if (!allowed) return { data: null, error: { code: 'P0001', message: 'Invalid order status transition' } };
+      const oldStatus = order.status;
+      if (args.p_target_status === 'cancelled') {
+        for (const item of tables.order_items.filter((row) => row.order_id === order.id)) {
+          const variant = tables.product_variants.find((row) => row.id === item.variant_id);
+          variant.stock_quantity = Number(variant.stock_quantity || 0) + item.quantity;
+          tables.inventory_movements.push({ id: crypto.randomUUID(), variant_id: item.variant_id, change_type: 'add', quantity: item.quantity, note: args.p_note || 'Order cancellation restock', actor_id: args.p_actor_id, order_id: order.id, created_at: new Date().toISOString() });
+        }
+      }
+      order.status = args.p_target_status;
+      tables.order_status_history.push({ id: crypto.randomUUID(), order_id: order.id, from_status: oldStatus, to_status: order.status, actor_id: args.p_actor_id, note: args.p_note || null, created_at: new Date().toISOString() });
       return { data: order, error: null };
     }
     return { data: null, error: { message: 'Unknown RPC' } };
@@ -437,6 +463,7 @@ describe('checkout validation', () => {
     assert.equal(response.body.final_amount, 17.25);
     assert.equal(tables.cart_items.some((item) => item.cart_id === ids.aliceCart), false);
     assert.equal(tables.product_variants[0].stock_quantity, 1);
+    assert.equal(tables.order_status_history.at(-1).to_status, 'pending');
   });
 
   it('rejects checkout when stock is insufficient without creating or clearing anything', async () => {
@@ -448,6 +475,95 @@ describe('checkout validation', () => {
     assert.equal(response.status, 409);
     assert.equal(tables.orders.length, 2);
     assert.equal(tables.cart_items.some((item) => item.cart_id === ids.aliceCart), true);
+  });
+});
+
+describe('order cancellation and status management', () => {
+  it('lets a customer cancel only their pending order and restores stock once', async () => {
+    const first = await request('POST', '/api/orders/' + ids.aliceOrder + '/cancel', {
+      token: tokenFor(ids.alice), body: { note: 'Changed my mind' },
+    });
+    const repeated = await request('POST', '/api/orders/' + ids.aliceOrder + '/cancel', {
+      token: tokenFor(ids.alice),
+    });
+    const foreign = await request('POST', '/api/orders/' + ids.bobOrder + '/cancel', {
+      token: tokenFor(ids.alice),
+    });
+
+    assert.equal(first.status, 200);
+    assert.equal(first.body.status, 'cancelled');
+    assert.equal(repeated.status, 409);
+    assert.equal(foreign.status, 404);
+    assert.equal(tables.product_variants[0].stock_quantity, 3);
+    assert.equal(tables.inventory_movements.filter((row) => row.order_id === ids.aliceOrder).length, 1);
+    assert.equal(tables.order_status_history.at(-1).note, 'Changed my mind');
+  });
+
+  it('rejects customer cancellation after an order enters processing', async () => {
+    tables.orders[0].status = 'processing';
+    const response = await request('POST', '/api/orders/' + ids.aliceOrder + '/cancel', {
+      token: tokenFor(ids.alice),
+    });
+    assert.equal(response.status, 409);
+    assert.equal(tables.product_variants[0].stock_quantity, 2);
+    assert.equal(tables.inventory_movements.length, 0);
+  });
+
+  it('allows admins to list orders, advance valid states, and read status history', async () => {
+    const admin = tokenFor(ids.alice, 'admin');
+    const list = await request('GET', '/api/admin/orders?page=1&limit=10&status=pending', { token: admin });
+    const advance = await request('PATCH', '/api/admin/orders/' + ids.aliceOrder + '/status', {
+      token: admin, body: { status: 'processing', note: 'Packed' },
+    });
+    const ship = await request('PATCH', '/api/admin/orders/' + ids.aliceOrder + '/status', {
+      token: admin, body: { status: 'shipped' },
+    });
+    const history = await request('GET', '/api/admin/orders/' + ids.aliceOrder + '/status-history', { token: admin });
+
+    assert.equal(list.status, 200);
+    assert.equal(list.body.total, 2);
+    assert.equal(advance.status, 200);
+    assert.equal(advance.body.status, 'processing');
+    assert.equal(ship.status, 200);
+    assert.equal(ship.body.status, 'shipped');
+    assert.equal(history.status, 200);
+    assert.equal(history.body.history.length, 2);
+  });
+
+  it('rejects invalid transitions and protects admin routes', async () => {
+    const invalid = await request('PATCH', '/api/admin/orders/' + ids.aliceOrder + '/status', {
+      token: tokenFor(ids.alice, 'admin'), body: { status: 'delivered' },
+    });
+    const customer = await request('GET', '/api/admin/orders', { token: tokenFor(ids.alice) });
+    const invalidStatus = await request('GET', '/api/admin/orders?status=unknown', { token: tokenFor(ids.alice, 'admin') });
+
+    assert.equal(invalid.status, 409);
+    assert.equal(customer.status, 403);
+    assert.equal(invalidStatus.status, 400);
+  });
+
+  it('lets admins cancel processing orders but never shipped orders', async () => {
+    const admin = tokenFor(ids.alice, 'admin');
+    tables.orders[0].status = 'processing';
+    const processing = await request('POST', '/api/admin/orders/' + ids.aliceOrder + '/cancel', { token: admin });
+    assert.equal(processing.status, 200);
+    assert.equal(tables.product_variants[0].stock_quantity, 3);
+
+    tables.orders[0].status = 'shipped';
+    const shipped = await request('POST', '/api/admin/orders/' + ids.aliceOrder + '/cancel', { token: admin });
+    assert.equal(shipped.status, 409);
+    assert.equal(tables.product_variants[0].stock_quantity, 3);
+    assert.equal(tables.inventory_movements.filter((row) => row.order_id === ids.aliceOrder).length, 1);
+  });
+
+  it('validates UUIDs and cancellation notes', async () => {
+    const admin = tokenFor(ids.alice, 'admin');
+    const invalidId = await request('POST', '/api/orders/1/cancel', { token: tokenFor(ids.alice) });
+    const invalidNote = await request('POST', '/api/orders/' + ids.aliceOrder + '/cancel', {
+      token: admin, body: { note: 'n'.repeat(501) },
+    });
+    assert.equal(invalidId.status, 400);
+    assert.equal(invalidNote.status, 400);
   });
 });
 
