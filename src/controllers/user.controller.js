@@ -1,31 +1,27 @@
 const db = require('../config/database');
+const HttpError = require('../utils/http-error');
+const { requireUuid } = require('../utils/uuid');
 
 exports.getAllUsers = async (req, res) => {
-  try {
-    const { data, error } = await db
-      .from('users')
-      .select('id, full_name, email, role, created_at');
+  const { data, error } = await db
+    .from('users')
+    .select('id, full_name, email, role, created_at');
 
-    if (error) return res.status(400).json(error);
+  if (error) throw error;
 
-    res.json(data);
-  } catch (err) {
-    res.status(500).json({ message: err.message });
-  }
+  res.json(data);
 };
 
 exports.getUserById = async (req, res) => {
-  try {
-    const { data, error } = await db
-      .from('users')
-      .select('id, full_name, email, role, created_at')
-      .eq('id', req.params.id)
-      .single();
+  requireUuid(req.params.id, 'id');
+  const { data, error } = await db
+    .from('users')
+    .select('id, full_name, email, role, created_at')
+    .eq('id', req.params.id)
+    .maybeSingle();
 
-    if (error) return res.status(400).json(error);
+  if (error) throw error;
+  if (!data) throw new HttpError(404, 'User not found');
 
-    res.json(data);
-  } catch (err) {
-    res.status(500).json({ message: err.message });
-  }
+  res.json(data);
 };

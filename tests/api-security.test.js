@@ -467,6 +467,64 @@ describe('authorization and ownership', () => {
     assert.equal(address.status, 400);
     assert.equal(variant.status, 400);
   });
+  it('rejects malformed IDs on product, category, and admin user routes', async () => {
+    const admin = tokenFor(ids.alice, 'admin');
+    const product = await request('PUT', '/api/products/1', { token: admin, body: { name: 'Changed' } });
+    const category = await request('DELETE', '/api/categories/1', { token: admin });
+    const user = await request('GET', '/api/users/1', { token: admin });
+
+    assert.equal(product.status, 400);
+    assert.equal(category.status, 400);
+    assert.equal(user.status, 400);
+  });
+  it('rejects product and category mass assignment and malformed values', async () => {
+    const admin = tokenFor(ids.alice, 'admin');
+    const product = await request('POST', '/api/products', {
+      token: admin, body: { name: 'Product', id: ids.variant, stock_quantity: 500 },
+    });
+    const category = await request('POST', '/api/categories', {
+      token: admin, body: { name: '', created_at: 'forged' },
+    });
+
+    assert.equal(product.status, 400);
+    assert.equal(category.status, 400);
+    assert.equal((tables.products || []).length, 0);
+    assert.equal((tables.categories || []).length, 0);
+  });
+  it('lets admins create, browse, update, and delete products and categories', async () => {
+    const admin = tokenFor(ids.alice, 'admin');
+    const category = await request('POST', '/api/categories', {
+      token: admin, body: { name: 'Accessories', description: 'Daily items' },
+    });
+    const product = await request('POST', '/api/products', {
+      token: admin, body: { name: 'Canvas Bag', category_id: category.body.id, price: 19.5 },
+    });
+    const products = await request('GET', '/api/products');
+    const categories = await request('GET', '/api/categories');
+    const updatedProduct = await request('PUT', '/api/products/' + product.body.id, {
+      token: admin, body: { name: 'Canvas Tote' },
+    });
+    const updatedCategory = await request('PUT', '/api/categories/' + category.body.id, {
+      token: admin, body: { description: 'Updated description' },
+    });
+    const deletedProduct = await request('DELETE', '/api/products/' + product.body.id, { token: admin });
+    const deletedCategory = await request('DELETE', '/api/categories/' + category.body.id, { token: admin });
+
+    assert.equal(category.status, 201);
+    assert.equal(product.status, 201);
+    assert.equal(products.status, 200);
+    assert.equal(categories.status, 200);
+    assert.equal(products.body[0].name, 'Canvas Bag');
+    assert.equal(categories.body[0].name, 'Accessories');
+    assert.equal(updatedProduct.status, 200);
+    assert.equal(updatedCategory.status, 200);
+    assert.equal(updatedProduct.body.name, 'Canvas Tote');
+    assert.equal(updatedCategory.body.message, 'Updated');
+    assert.equal(deletedProduct.status, 200);
+    assert.equal(deletedCategory.status, 200);
+    assert.equal(tables.products.length, 0);
+    assert.equal(tables.categories.length, 0);
+  });
   it('does not allow deleting another customer cart item', async () => {
     const response = await request('DELETE', '/api/cart/' + ids.bobItem, {
       token: tokenFor(ids.alice),
