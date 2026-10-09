@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 const path = require('node:path');
 const jwt = require('jsonwebtoken');
+const { OAuth2Client } = require('google-auth-library');
 
 const ids = {
   alice: '11111111-1111-4111-8111-111111111111',
@@ -20,6 +21,7 @@ const ids = {
 };
 
 const baseTables = {
+  users: [],
   carts: [
     { id: ids.aliceCart, user_id: ids.alice },
     { id: ids.bobCart, user_id: ids.bob },
@@ -252,11 +254,12 @@ let server;
 let baseUrl;
 
 const tokenFor = (id, role = 'customer') =>
-  jwt.sign({ id, role }, process.env.JWT_SECRET);
+  jwt.sign({ id, role }, process.env.JWT_SECRET, { expiresIn: '1h' });
 
 async function request(method, endpoint, options = {}) {
   const headers = {};
   if (options.token) headers.authorization = 'Bearer ' + options.token;
+  if (options.authorization) headers.authorization = options.authorization;
   if (options.body !== undefined) headers['content-type'] = 'application/json';
 
   const response = await fetch(baseUrl + endpoint, {
@@ -320,6 +323,97 @@ describe('customer order history', () => {
 
     assert.equal(invalidPage.status, 400);
     assert.equal(invalidId.status, 400);
+  });
+});
+
+describe('authentication flows', () => {
+  it('validates registration fields before writing to PostgreSQL', async () => {
+    const malformed = await request('POST', '/api/auth/register', {
+      body: { full_name: '', email: 'not-an-email', password: 'short', role: 'admin' },
+    });
+
+    assert.equal(malformed.status, 400);
+    assert.equal(tables.users.length, 0);
+  });
+
+  it('registers a customer with a password hash and UUID token subject', async () => {
+    const response = await request('POST', '/api/auth/register', {
+      body: { full_name: 'Alice Example', email: 'alice@example.com', password: 'correct-horse-9' },
+    });
+
+    assert.equal(response.status, 201);
+    assert.match(response.body.id, /^[0-9a-f-]{36}$/i);
+    assert.equal(tables.users[0].role, 'customer');
+    assert.notEqual(tables.users[0].password, 'correct-horse-9');
+    assert.equal(jwt.verify(response.body.token, process.env.JWT_SECRET).id, response.body.id);
+
+    const login = await request('POST', '/api/auth/login', {
+      body: { email: 'ALICE@example.com', password: 'correct-horse-9' },
+    });
+    assert.equal(login.status, 200);
+    assert.equal(login.body.user.id, response.body.id);
+    const profile = await request('GET', '/api/auth/profile', { token: login.body.token });
+    assert.equal(profile.status, 200);
+    assert.equal(profile.body.email, 'alice@example.com');
+  });
+
+  it('returns the same unauthorized response for unknown users and wrong passwords', async () => {
+    const unknown = await request('POST', '/api/auth/login', {
+      body: { email: 'missing@example.com', password: 'incorrect-pass-9' },
+    });
+    tables.users.push({
+      id: ids.alice, full_name: 'Alice', email: 'alice@example.com',
+      password: '$2a$10$invalid', role: 'customer', provider: 'local',
+    });
+    const incorrect = await request('POST', '/api/auth/login', {
+      body: { email: 'alice@example.com', password: 'incorrect-pass-9' },
+    });
+
+    assert.equal(unknown.status, 401);
+    assert.equal(incorrect.status, 401);
+    assert.equal(unknown.body.message, incorrect.body.message);
+  });
+
+  it('creates a Google user when no matching PostgreSQL user exists', async () => {
+    const originalVerify = OAuth2Client.prototype.verifyIdToken;
+    OAuth2Client.prototype.verifyIdToken = async () => ({
+      getPayload: () => ({ email: 'google@example.com', name: 'Google User', email_verified: true }),
+    });
+    try {
+      const response = await request('POST', '/api/auth/google', { body: { idToken: 'mock-google-token-value' } });
+      assert.equal(response.status, 200);
+      assert.equal(response.body.user.email, 'google@example.com');
+      assert.equal(tables.users[0].provider, 'google');
+    } finally {
+      OAuth2Client.prototype.verifyIdToken = originalVerify;
+    }
+  });
+
+  it('rejects missing or malformed auth payloads and does not leak provider errors', async () => {
+    const missingLogin = await request('POST', '/api/auth/login', { body: {} });
+    const missingGoogle = await request('POST', '/api/auth/google', { body: {} });
+
+    assert.equal(missingLogin.status, 400);
+    assert.equal(missingGoogle.status, 400);
+    assert.equal(Object.hasOwn(missingGoogle.body, 'error'), false);
+  });
+
+  it('rejects malformed bearer headers and tokens without valid UUID roles', async () => {
+    const malformedHeader = await request('GET', '/api/cart', { authorization: 'Basic abc' });
+    const wrongRole = await request('GET', '/api/cart', {
+      token: jwt.sign({ id: ids.alice, role: 'owner' }, process.env.JWT_SECRET),
+    });
+    const nonUuid = await request('GET', '/api/cart', {
+      token: jwt.sign({ id: '1', role: 'customer', exp: Math.floor(Date.now() / 1000) + 60 }, process.env.JWT_SECRET),
+    });
+    const noExpiry = await request('GET', '/api/cart', {
+      token: jwt.sign({ id: ids.alice, role: 'customer' }, process.env.JWT_SECRET),
+    });
+
+    assert.equal(malformedHeader.status, 401);
+    assert.equal(wrongRole.status, 401);
+    assert.equal(nonUuid.status, 401);
+    assert.equal(noExpiry.status, 401);
   });
 });
 

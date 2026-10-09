@@ -2,6 +2,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { OAuth2Client } = require('google-auth-library');
 const db = require('../config/database');
+const HttpError = require('../utils/http-error');
 
 const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
@@ -10,7 +11,7 @@ class AuthService {
 		return jwt.sign(
 			{ id: user.id, role: user.role },
 			process.env.JWT_SECRET,
-			{ expiresIn: process.env.JWT_EXPIRE || process.env.JWT_EXPIRES_IN || '1d' }
+			{ expiresIn: process.env.JWT_EXPIRE || process.env.JWT_EXPIRES_IN || '1d', algorithm: 'HS256' }
 		);
 	}
 
@@ -33,7 +34,8 @@ class AuthService {
 			.single();
 
 		if (error) {
-			throw new Error(error.message || 'Registration failed');
+			if (error.code === '23505') throw new HttpError(409, 'Email is already registered');
+			throw error;
 		}
 
 		return {
@@ -47,19 +49,18 @@ class AuthService {
 			.from('users')
 			.select('*')
 			.eq('email', email)
-			.single();
+			.maybeSingle();
 
-		if (error || !data) {
-			throw new Error('User not found');
-		}
+		if (error) throw error;
+		if (!data) throw new HttpError(401, 'Invalid email or password');
 
 		if (!data.password) {
-			throw new Error('This account uses Google login');
+			throw new HttpError(401, 'Invalid email or password');
 		}
 
 		const validPassword = await bcrypt.compare(password, data.password);
 		if (!validPassword) {
-			throw new Error('Wrong password');
+			throw new HttpError(401, 'Invalid email or password');
 		}
 
 		return {
@@ -78,17 +79,21 @@ class AuthService {
 		});
 
 		const payload = ticket.getPayload();
-		const { email, name } = payload;
+		if (!payload || payload.email_verified !== true || typeof payload.email !== 'string') {
+			throw new HttpError(401, 'Google authentication failed');
+		}
+		const email = payload.email.trim().toLowerCase();
+		const name = typeof payload.name === 'string' && payload.name.trim()
+			? payload.name.trim()
+			: email.split('@')[0];
 
 		const { data: existingUser, error: fetchError } = await db
 			.from('users')
 			.select('*')
 			.eq('email', email)
-			.single();
+			.maybeSingle();
 
-		if (fetchError && fetchError.code !== 'PGRST116') {
-			throw new Error(fetchError.message || 'Failed to fetch user');
-		}
+		if (fetchError) throw fetchError;
 
 		let user = existingUser;
 
@@ -108,7 +113,8 @@ class AuthService {
 				.single();
 
 			if (createError) {
-				throw new Error(createError.message || 'Failed to create Google user');
+				if (createError.code === '23505') throw new HttpError(409, 'Unable to create Google account');
+				throw createError;
 			}
 
 			user = createdUser;
@@ -128,11 +134,10 @@ class AuthService {
 			.from('users')
 			.select('id, full_name, email, role, provider, created_at')
 			.eq('id', id)
-			.single();
+			.maybeSingle();
 
-		if (error || !data) {
-			throw new Error('User not found');
-		}
+		if (error) throw error;
+		if (!data) throw new HttpError(404, 'User not found');
 
 		return data;
 	}
