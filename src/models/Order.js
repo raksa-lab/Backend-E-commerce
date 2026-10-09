@@ -1,7 +1,7 @@
-const supabase = require('../config/supabase');
+const db = require('../config/database');
 
 exports.create = async (payload) => {
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from('orders')
     .insert([payload])
     .select('*')
@@ -12,7 +12,7 @@ exports.create = async (payload) => {
 };
 
 exports.findAllByUser = async (userId, { offset, limit }) => {
-  const { data, count, error } = await supabase
+  const { data, count, error } = await db
     .from('orders')
     .select('*', { count: 'exact' })
     .eq('user_id', userId)
@@ -24,7 +24,7 @@ exports.findAllByUser = async (userId, { offset, limit }) => {
 };
 
 exports.findByIdForUser = async (id, userId) => {
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from('orders')
     .select('*')
     .eq('id', id)

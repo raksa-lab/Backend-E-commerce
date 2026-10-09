@@ -1,7 +1,7 @@
-const supabase = require('../config/supabase');
+const db = require('../config/database');
 
 exports.findOne = async ({ where }) => {
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from('carts')
     .select('*')
     .eq('user_id', where.user_id)
@@ -12,7 +12,7 @@ exports.findOne = async ({ where }) => {
 };
 
 exports.create = async (payload) => {
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from('carts')
     .insert([payload])
     .select('*')

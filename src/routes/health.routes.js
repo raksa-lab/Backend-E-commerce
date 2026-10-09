@@ -1,22 +1,14 @@
 const router = require('express').Router();
-const supabase = require('../config/supabase');
+const database = require('../config/database');
 
 router.get('/db-check', async (req, res) => {
   try {
-    const { data, error } = await supabase.storage.listBuckets();
-
-    if (error) {
-      return res.status(500).json({
-        success: false,
-        message: 'Database connection failed ❌',
-        error: error.message
-      });
-    }
+    await database.checkConnection();
 
     res.status(200).json({
       success: true,
       message: 'Database connected successfully ✅',
-      bucketsCount: Array.isArray(data) ? data.length : 0
+      database: 'postgresql'
     });
 
   } catch (err) {

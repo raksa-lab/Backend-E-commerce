@@ -210,10 +210,10 @@ const supabase = {
     return { data: null, error: { message: 'Unknown RPC' } };
   },
 };
-const supabasePath = path.resolve(__dirname, '../src/config/supabase.js');
-require.cache[supabasePath] = {
-  id: supabasePath,
-  filename: supabasePath,
+const databasePath = path.resolve(__dirname, '../src/config/database.js');
+require.cache[databasePath] = {
+  id: databasePath,
+  filename: databasePath,
   loaded: true,
   exports: supabase,
   children: [],

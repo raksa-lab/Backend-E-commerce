@@ -1,7 +1,7 @@
-const supabase = require('../config/supabase');
+const db = require('../config/database');
 
 exports.findByVariant = (variantId, { offset, limit }) =>
-  supabase.from('inventory_movements')
+  db.from('inventory_movements')
     .select('*', { count: 'exact' })
     .eq('variant_id', variantId)
     .order('created_at', { ascending: false })

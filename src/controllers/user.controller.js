@@ -1,8 +1,8 @@
-const supabase = require('../config/supabase');
+const db = require('../config/database');
 
 exports.getAllUsers = async (req, res) => {
   try {
-    const { data, error } = await supabase
+    const { data, error } = await db
       .from('users')
       .select('id, full_name, email, role, created_at');
 
@@ -16,7 +16,7 @@ exports.getAllUsers = async (req, res) => {
 
 exports.getUserById = async (req, res) => {
   try {
-    const { data, error } = await supabase
+    const { data, error } = await db
       .from('users')
       .select('id, full_name, email, role, created_at')
       .eq('id', req.params.id)

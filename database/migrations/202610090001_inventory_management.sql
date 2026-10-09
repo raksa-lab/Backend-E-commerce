@@ -163,11 +163,8 @@ BEGIN
 END;
 $$;
 
-REVOKE ALL ON FUNCTION public.admin_adjust_inventory(uuid, uuid, text, integer, text) FROM PUBLIC, anon, authenticated;
-REVOKE ALL ON FUNCTION public.checkout_order(uuid, uuid) FROM PUBLIC, anon, authenticated;
-GRANT EXECUTE ON FUNCTION public.admin_adjust_inventory(uuid, uuid, text, integer, text) TO service_role;
-GRANT EXECUTE ON FUNCTION public.checkout_order(uuid, uuid) TO service_role;
+REVOKE ALL ON FUNCTION public.admin_adjust_inventory(uuid, uuid, text, integer, text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.checkout_order(uuid, uuid) FROM PUBLIC;
 
 ALTER TABLE public.inventory_movements ENABLE ROW LEVEL SECURITY;
-REVOKE ALL ON TABLE public.inventory_movements FROM anon, authenticated;
-GRANT SELECT ON TABLE public.inventory_movements TO service_role;
+REVOKE ALL ON TABLE public.inventory_movements FROM PUBLIC;

@@ -1,21 +1,6 @@
-const { DataTypes } = require('sequelize');
-const sequelize = require('../config/database');
-const Product = require('./Product');
-const User = require('./User');
+const db = require('../config/database');
 
-const Review = sequelize.define('Review', {
-  id: {
-    type: DataTypes.UUID,
-    defaultValue: DataTypes.UUIDV4,
-    primaryKey: true,
-  },
-  user_id: DataTypes.UUID,
-  product_id: DataTypes.UUID,
-  rating: DataTypes.INTEGER,
-  comment: DataTypes.TEXT,
-});
-
-Review.belongsTo(Product, { foreignKey: 'product_id' });
-Review.belongsTo(User, { foreignKey: 'user_id' });
-
-module.exports = Review;
+exports.create = (data) => db.from('reviews').insert([data]).select('*').single();
+exports.findAll = () => db.from('reviews').select('*');
+exports.update = (data, { where }) => db.from('reviews').update(data).eq('id', where.id).select('*');
+exports.destroy = ({ where }) => db.from('reviews').delete().eq('id', where.id).select('*');

@@ -1,7 +1,7 @@
-const supabase = require('../config/supabase');
+const db = require('../config/database');
 
 exports.findAll = async ({ where }) => {
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from('cart_items')
     .select('*')
     .eq('cart_id', where.cart_id);
@@ -11,7 +11,7 @@ exports.findAll = async ({ where }) => {
 };
 
 exports.create = async (payload) => {
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from('cart_items')
     .insert([payload])
     .select('*')
@@ -22,7 +22,7 @@ exports.create = async (payload) => {
 };
 
 exports.destroy = async ({ where }) => {
-  let query = supabase.from('cart_items').delete();
+  let query = db.from('cart_items').delete();
 
   if (where.id) {
     query = query.eq('id', where.id);

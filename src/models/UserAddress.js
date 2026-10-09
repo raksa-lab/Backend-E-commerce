@@ -1,13 +1,13 @@
-const supabase = require('../config/supabase');
+const db = require('../config/database');
 
 exports.create = (data) =>
-  supabase.from('user_addresses').insert([data]).select().single();
+  db.from('user_addresses').insert([data]).select().single();
 
 exports.findByUser = (userId) =>
-  supabase.from('user_addresses').select('*').eq('user_id', userId);
+  db.from('user_addresses').select('*').eq('user_id', userId);
 
 exports.findByIdForUser = async (id, userId) => {
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from('user_addresses')
     .select('*')
     .eq('id', id)
@@ -19,7 +19,7 @@ exports.findByIdForUser = async (id, userId) => {
 };
 
 exports.updateForUser = async (id, userId, data) => {
-  const { data: rows, error } = await supabase
+  const { data: rows, error } = await db
     .from('user_addresses')
     .update(data)
     .eq('id', id)
@@ -31,7 +31,7 @@ exports.updateForUser = async (id, userId, data) => {
 };
 
 exports.deleteForUser = async (id, userId) => {
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from('user_addresses')
     .delete()
     .eq('id', id)

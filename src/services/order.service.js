@@ -1,10 +1,10 @@
 const OrderItem = require('../models/OrderItem');
 const Order = require('../models/Order');
 const HttpError = require('../utils/http-error');
-const supabase = require('../config/supabase');
+const db = require('../config/database');
 
 exports.createOrder = async (userId, addressId) => {
-  const { data, error } = await supabase.rpc('checkout_order', {
+  const { data, error } = await db.rpc('checkout_order', {
     p_user_id: userId,
     p_address_id: addressId,
   });

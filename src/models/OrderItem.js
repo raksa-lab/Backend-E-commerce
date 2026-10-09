@@ -1,7 +1,7 @@
-const supabase = require('../config/supabase');
+const db = require('../config/database');
 
 exports.create = async (payload) => {
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from('order_items')
     .insert([payload])
     .select('*')
@@ -12,7 +12,7 @@ exports.create = async (payload) => {
 };
 
 exports.findAllByOrder = async (orderId) => {
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from('order_items')
     .select('*')
     .eq('order_id', orderId);

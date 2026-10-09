@@ -1,27 +1,17 @@
-const User = require('./User');
-const UserAddress = require('./UserAddress');
-const Category = require('./Category');
-const Product = require('./Product');
-const ProductVariant = require('./ProductVariant');
-const ProductImage = require('./ProductImage');
-const Wishlist = require('./Wishlist');
-const Review = require('./Review');
-const { Cart, CartItem } = require('./Cart');
-const { Order, OrderItem } = require('./Order');
-const InventoryLog = require('./InventoryLog');
-
 module.exports = {
-  User,
-  UserAddress,
-  Category,
-  Product,
-  ProductVariant,
-  ProductImage,
-  Wishlist,
-  Review,
-  Cart,
-  CartItem,
-  Order,
-  OrderItem,
-  InventoryLog,
+  User: require('./User'),
+  UserAddress: require('./UserAddress'),
+  Category: require('./Category'),
+  Product: require('./Product'),
+  ProductVariant: require('./ProductVariant'),
+  ProductImage: require('./ProductImage'),
+  Wishlist: require('./Wishlist'),
+  Review: require('./Review'),
+  Cart: require('./Cart'),
+  CartItem: require('./CartItem'),
+  Order: require('./Order'),
+  OrderItem: require('./OrderItem'),
+  InventoryLog: require('./InventoryLog'),
+  InventoryMovement: require('./InventoryMovement'),
+  Payment: require('./Payment'),
 };

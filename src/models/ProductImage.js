@@ -1,19 +1,7 @@
-const { DataTypes } = require('sequelize');
-const sequelize = require('../config/database');
-const Product = require('./Product');
+const db = require('../config/database');
 
-const ProductImage = sequelize.define('ProductImage', {
-  id: {
-    type: DataTypes.UUID,
-    defaultValue: DataTypes.UUIDV4,
-    primaryKey: true,
-  },
-  product_id: DataTypes.UUID,
-  image_url: DataTypes.TEXT,
-  is_primary: DataTypes.BOOLEAN,
-});
-
-ProductImage.belongsTo(Product, { foreignKey: 'product_id' });
-Product.hasMany(ProductImage, { foreignKey: 'product_id' });
-
-module.exports = ProductImage;
+exports.create = (data) => db.from('product_images').insert([data]).select('*').single();
+exports.findAll = () => db.from('product_images').select('*');
+exports.findByProduct = (productId) => db.from('product_images').select('*').eq('product_id', productId);
+exports.update = (id, data) => db.from('product_images').update(data).eq('id', id).select('*');
+exports.delete = (id) => db.from('product_images').delete().eq('id', id).select('*');

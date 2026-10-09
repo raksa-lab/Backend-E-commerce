@@ -1,13 +1,10 @@
-const supabase = require('../config/supabase');
+const db = require('../config/database');
 
 exports.create = (data) =>
-  supabase.from('categories').insert([data]).select().single();
+  db.from('categories').insert([data]).select().single();
 
-exports.findAll = () =>
-  supabase.from('categories').select('*');
+exports.findAll = () => db.from('categories').select('*');
 
-exports.update = (id, data) =>
-  supabase.from('categories').update(data).eq('id', id);
+exports.update = (id, data) => db.from('categories').update(data).eq('id', id);
 
-exports.delete = (id) =>
-  supabase.from('categories').delete().eq('id', id);
+exports.delete = (id) => db.from('categories').delete().eq('id', id);

@@ -1,7 +1,7 @@
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { OAuth2Client } = require('google-auth-library');
-const supabase = require('../config/supabase');
+const db = require('../config/database');
 
 const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
@@ -18,7 +18,7 @@ class AuthService {
 		const { full_name, email, password } = userData;
 		const hashedPassword = await bcrypt.hash(password, 10);
 
-		const { data, error } = await supabase
+		const { data, error } = await db
 			.from('users')
 			.insert([
 				{
@@ -43,7 +43,7 @@ class AuthService {
 	}
 
 	static async login(email, password) {
-		const { data, error } = await supabase
+		const { data, error } = await db
 			.from('users')
 			.select('*')
 			.eq('email', email)
@@ -80,7 +80,7 @@ class AuthService {
 		const payload = ticket.getPayload();
 		const { email, name } = payload;
 
-		const { data: existingUser, error: fetchError } = await supabase
+		const { data: existingUser, error: fetchError } = await db
 			.from('users')
 			.select('*')
 			.eq('email', email)
@@ -93,7 +93,7 @@ class AuthService {
 		let user = existingUser;
 
 		if (!user) {
-			const { data: createdUser, error: createError } = await supabase
+			const { data: createdUser, error: createError } = await db
 				.from('users')
 				.insert([
 					{
@@ -124,7 +124,7 @@ class AuthService {
 	}
 
 	static async getProfile(id) {
-		const { data, error } = await supabase
+		const { data, error } = await db
 			.from('users')
 			.select('id, full_name, email, role, provider, created_at')
 			.eq('id', id)
