@@ -1,68 +1,22 @@
-const Order = require('../models/Order');
 const OrderItem = require('../models/OrderItem');
-const Cart = require('../models/Cart');
-const CartItem = require('../models/CartItem');
-const Variant = require('../models/ProductVariant');
-const Address = require('../models/UserAddress');
+const Order = require('../models/Order');
 const HttpError = require('../utils/http-error');
+const supabase = require('../config/supabase');
 
 exports.createOrder = async (userId, addressId) => {
-  const address = await Address.findByIdForUser(addressId, userId);
-  if (!address) throw new HttpError(404, 'Address not found');
-
-  const cart = await Cart.findOne({ where: { user_id: userId } });
-  if (!cart) throw new HttpError(400, 'Cart is empty');
-
-  const items = await CartItem.findAll({ where: { cart_id: cart.id } });
-  if (!items.length) throw new HttpError(400, 'Cart is empty');
-
-  const pricedItems = [];
-  let totalCents = 0;
-
-  for (const item of items) {
-    if (!Number.isSafeInteger(item.quantity) || item.quantity < 1) {
-      throw new HttpError(400, 'Cart contains an invalid quantity');
-    }
-
-    const variant = await Variant.findByPk(item.variant_id);
-    if (!variant) throw new HttpError(404, 'A cart product variant no longer exists');
-
-    const price = Number(variant.price);
-    if (!Number.isFinite(price) || price < 0) {
-      throw new HttpError(400, 'A cart product has an invalid price');
-    }
-
-    const priceCents = Math.round(price * 100);
-    totalCents += priceCents * item.quantity;
-    if (!Number.isSafeInteger(totalCents)) {
-      throw new HttpError(400, 'Order total is too large');
-    }
-
-    pricedItems.push({
-      variant_id: item.variant_id,
-      quantity: item.quantity,
-      price: priceCents / 100,
-    });
-  }
-
-  const total = totalCents / 100;
-  const order = await Order.create({
-    user_id: userId,
-    address_id: addressId,
-    total_amount: total,
-    final_amount: total,
-    status: 'pending',
+  const { data, error } = await supabase.rpc('checkout_order', {
+    p_user_id: userId,
+    p_address_id: addressId,
   });
-
-  for (const item of pricedItems) {
-    await OrderItem.create({
-      order_id: order.id,
-      ...item,
-    });
+  if (error) {
+    if (error.code === 'P0002') throw new HttpError(404, error.message);
+    if (error.code === 'P0001') {
+      const status = /insufficient stock/i.test(error.message) ? 409 : 400;
+      throw new HttpError(status, error.message);
+    }
+    throw error;
   }
-
-  await CartItem.destroy({ where: { cart_id: cart.id } });
-  return order;
+  return data;
 };
 
 exports.getUserOrders = async (userId, { page, limit }) => {

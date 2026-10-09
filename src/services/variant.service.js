@@ -10,7 +10,10 @@ exports.create = async (data) => {
 exports.getAll = async () => {
   const { data, error } = await Variant.findAll();
   if (error) throw error;
-  return data || [];
+  return (data || []).map(({ stock_quantity, ...variant }) => ({
+    ...variant,
+    in_stock: Number(stock_quantity || 0) > 0,
+  }));
 };
 
 exports.update = async (id, data) => {

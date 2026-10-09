@@ -6,6 +6,9 @@ const validateBody = (body) => {
   if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length === 0) {
     throw new HttpError(400, 'Request body must be a non-empty JSON object');
   }
+  if (Object.hasOwn(body, 'stock_quantity')) {
+    throw new HttpError(400, 'Use inventory adjustment endpoints to change stock');
+  }
 };
 
 exports.create = async (req, res) => {
