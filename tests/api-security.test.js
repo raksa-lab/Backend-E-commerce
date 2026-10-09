@@ -5,6 +5,51 @@ const path = require('node:path');
 const jwt = require('jsonwebtoken');
 const { OAuth2Client } = require('google-auth-library');
 
+const stripeConfigPath = path.resolve(__dirname, '../src/config/stripe.js');
+const stripeState = { sessions: [], refunds: [] };
+const fakeStripe = {
+  checkout: { sessions: {
+    async create(params, options) {
+      const existing = stripeState.sessions.find((session) => session.idempotencyKey === options.idempotencyKey);
+      if (existing) return existing;
+      const session = {
+        id: 'cs_test_' + (stripeState.sessions.length + 1),
+        url: 'https://checkout.stripe.test/session/' + (stripeState.sessions.length + 1),
+        status: 'open',
+        params,
+        idempotencyKey: options.idempotencyKey,
+      };
+      stripeState.sessions.push(session);
+      return session;
+    },
+    async retrieve(id) { return stripeState.sessions.find((session) => session.id === id); },
+    async expire(id) {
+      const session = stripeState.sessions.find((item) => item.id === id);
+      if (!session || session.status !== 'open') throw new Error('Checkout session cannot be expired');
+      session.status = 'expired';
+      return session;
+    },
+  } },
+  refunds: { async create(params, options) {
+    const existing = stripeState.refunds.find((refund) => refund.idempotencyKey === options.idempotencyKey);
+    if (existing) return existing;
+    const refund = {
+      id: 're_test_' + (stripeState.refunds.length + 1), status: 'succeeded',
+      ...params, idempotencyKey: options.idempotencyKey,
+    };
+    stripeState.refunds.push(refund);
+    return refund;
+  } },
+  webhooks: { constructEvent(rawBody, signature) {
+    if (signature !== 'test-signature') throw new Error('signature verification failed');
+    return JSON.parse(rawBody.toString('utf8'));
+  } },
+};
+require.cache[stripeConfigPath] = {
+  id: stripeConfigPath, filename: stripeConfigPath, loaded: true,
+  exports: { getStripeClient: () => fakeStripe, getWebhookSecret: () => 'whsec_unit_test_only' }, children: [], paths: [],
+};
+
 const ids = {
   alice: '11111111-1111-4111-8111-111111111111',
   bob: '22222222-2222-4222-8222-222222222222',
@@ -22,6 +67,9 @@ const ids = {
 
 const baseTables = {
   users: [],
+  payments: [],
+  payment_refunds: [],
+  stripe_webhook_events: [],
   carts: [
     { id: ids.aliceCart, user_id: ids.alice },
     { id: ids.bobCart, user_id: ids.bob },
@@ -177,6 +225,112 @@ class Query {
 const supabase = {
   from: (table) => new Query(table),
   async rpc(name, args) {
+    if (name === 'prepare_payment_attempt') {
+      const order = tables.orders.find((row) => row.id === args.p_order_id && row.user_id === args.p_user_id);
+      if (!order) return { data: null, error: { code: 'P0002', message: 'Order not found' } };
+      if (order.status !== 'pending') return { data: null, error: { code: 'P0001', message: 'Order is not payable' } };
+      const sameKey = tables.payments.find((row) => row.idempotency_key === args.p_idempotency_key);
+      if (sameKey) {
+        if (sameKey.order_id !== order.id) return { data: null, error: { code: 'P0001', message: 'Idempotency key already used' } };
+        return { data: sameKey, error: null };
+      }
+      const existing = tables.payments.find((row) => row.order_id === order.id && row.payment_status === 'pending');
+      if (existing) return { data: existing, error: null };
+      if (tables.payments.some((row) => row.order_id === order.id && ['succeeded', 'partially_refunded', 'refunded'].includes(row.payment_status))) {
+        return { data: null, error: { code: 'P0001', message: 'Order is already paid' } };
+      }
+      const payment = {
+        id: crypto.randomUUID(), order_id: order.id, amount_cents: Math.round(Number(order.final_amount) * 100),
+        currency: 'usd', payment_status: 'pending', provider: 'stripe', idempotency_key: args.p_idempotency_key,
+      };
+      tables.payments.push(payment);
+      return { data: payment, error: null };
+    }
+    if (name === 'attach_payment_session') {
+      const payment = tables.payments.find((row) => row.id === args.p_payment_id);
+      if (!payment) return { data: null, error: { code: 'P0002', message: 'Payment not found' } };
+      payment.stripe_checkout_session_id = args.p_session_id;
+      payment.checkout_url = args.p_checkout_url;
+      return { data: payment, error: null };
+    }
+    if (name === 'process_stripe_webhook') {
+      if (tables.stripe_webhook_events.some((row) => row.event_id === args.p_event_id)) {
+        return { data: { duplicate: true }, error: null };
+      }
+      const event = args.p_event_data;
+      const object = event.data?.object;
+      tables.stripe_webhook_events.push({ event_id: args.p_event_id, event_type: args.p_event_type });
+      if (args.p_event_type === 'checkout.session.completed') {
+        const payment = tables.payments.find((row) => row.id === object.metadata.payment_id);
+        if (!payment || payment.stripe_checkout_session_id !== object.id
+          || payment.amount_cents !== object.amount_total || payment.currency !== object.currency) {
+          tables.stripe_webhook_events.pop();
+          return { data: null, error: { code: 'P0001', message: 'Payment does not match checkout session' } };
+        }
+        if (object.payment_status === 'paid') {
+          payment.payment_status = 'succeeded';
+          payment.stripe_payment_intent_id = object.payment_intent;
+        }
+      } else if (args.p_event_type === 'checkout.session.expired') {
+        const payment = tables.payments.find((row) => row.stripe_checkout_session_id === object.id);
+        if (payment && payment.payment_status === 'pending') {
+          payment.payment_status = 'failed';
+          const order = tables.orders.find((row) => row.id === payment.order_id);
+          if (order?.status === 'pending') {
+            order.status = 'cancelled';
+            for (const item of tables.order_items.filter((row) => row.order_id === order.id)) {
+              const variant = tables.product_variants.find((row) => row.id === item.variant_id);
+              if (variant) variant.stock_quantity += item.quantity;
+              tables.inventory_movements.push({ id: crypto.randomUUID(), variant_id: item.variant_id, change_type: 'add', quantity: item.quantity, actor_id: order.user_id, order_id: order.id });
+            }
+          }
+        }
+      } else if (args.p_event_type === 'refund.updated') {
+        const refund = tables.payment_refunds.find((row) => row.id === object.metadata?.payment_refund_id);
+        if (refund) {
+          refund.stripe_refund_id ||= object.id;
+          if (refund.refund_status === 'pending') refund.refund_status = object.status;
+        }
+      }
+      return { data: { duplicate: false }, error: null };
+    }
+    if (name === 'reserve_payment_refund') {
+      const payment = tables.payments.find((row) => row.id === args.p_payment_id);
+      if (!payment) return { data: null, error: { code: 'P0002', message: 'Payment not found' } };
+      const prior = tables.payment_refunds.find((row) => row.idempotency_key === args.p_idempotency_key);
+      if (prior) {
+        if (prior.payment_id !== payment.id || prior.requested_amount_cents !== args.p_amount_cents) {
+          return { data: null, error: { code: 'P0001', message: 'Idempotency key reused with different refund data' } };
+        }
+        return { data: prior, error: null };
+      }
+      if (!['succeeded', 'partially_refunded'].includes(payment.payment_status)) {
+        return { data: null, error: { code: 'P0001', message: 'Payment cannot be refunded' } };
+      }
+      const reserved = tables.payment_refunds.filter((row) => row.payment_id === payment.id && ['pending', 'succeeded'].includes(row.refund_status)).reduce((sum, row) => sum + row.amount_cents, 0);
+      const amount = args.p_amount_cents ?? payment.amount_cents - reserved;
+      if (!Number.isSafeInteger(amount) || amount < 1 || amount > payment.amount_cents - reserved) {
+        return { data: null, error: { code: '22023', message: 'Invalid refund amount' } };
+      }
+      const refund = {
+        id: crypto.randomUUID(), payment_id: payment.id, amount_cents: amount,
+        requested_amount_cents: args.p_amount_cents, currency: payment.currency,
+        reason: args.p_reason, actor_id: args.p_actor_id, idempotency_key: args.p_idempotency_key,
+        refund_status: 'pending', stripe_payment_intent_id: payment.stripe_payment_intent_id,
+      };
+      tables.payment_refunds.push(refund);
+      return { data: refund, error: null };
+    }
+    if (name === 'complete_payment_refund') {
+      const refund = tables.payment_refunds.find((row) => row.id === args.p_refund_id);
+      if (!refund) return { data: null, error: { code: 'P0002', message: 'Refund not found' } };
+      refund.stripe_refund_id = args.p_stripe_refund_id;
+      if (refund.refund_status === 'pending') refund.refund_status = args.p_refund_status;
+      const payment = tables.payments.find((row) => row.id === refund.payment_id);
+      const refunded = tables.payment_refunds.filter((row) => row.payment_id === payment.id && row.refund_status === 'succeeded').reduce((sum, row) => sum + row.amount_cents, 0);
+      payment.payment_status = refunded === 0 ? 'succeeded' : refunded >= payment.amount_cents ? 'refunded' : 'partially_refunded';
+      return { data: refund, error: null };
+    }
     if (name === 'admin_adjust_inventory') {
       const variant = (tables.product_variants || []).find((row) => row.id === args.p_variant_id);
       if (!variant) return { data: null, error: { code: 'P0002', message: 'Variant not found' } };
@@ -216,6 +370,10 @@ const supabase = {
       const order = tables.orders.find((row) => row.id === args.p_order_id);
       if (!order) return { data: null, error: { code: 'P0002', message: 'Order not found' } };
       const isAdmin = args.p_actor_role === 'admin';
+      if (['processing', 'shipped', 'delivered'].includes(args.p_target_status)
+        && !tables.payments.some((row) => row.order_id === order.id && ['succeeded', 'partially_refunded'].includes(row.payment_status))) {
+        return { data: null, error: { code: 'P0001', message: 'Payment confirmation is required before order processing' } };
+      }
       if (!isAdmin && (order.user_id !== args.p_actor_id || args.p_target_status !== 'cancelled')) {
         return { data: null, error: { code: 'P0002', message: 'Order not found' } };
       }
@@ -249,6 +407,10 @@ require.cache[databasePath] = {
 };
 
 process.env.JWT_SECRET = 'api-security-test-secret';
+process.env.STRIPE_SECRET_KEY = 'sk_test_unit_test_only';
+process.env.STRIPE_WEBHOOK_SECRET = 'whsec_unit_test_only';
+process.env.PAYMENT_SUCCESS_URL = 'https://shop.example.test/payment-success';
+process.env.PAYMENT_CANCEL_URL = 'https://shop.example.test/payment-cancel';
 const app = require('../src/app');
 let server;
 let baseUrl;
@@ -260,12 +422,16 @@ async function request(method, endpoint, options = {}) {
   const headers = {};
   if (options.token) headers.authorization = 'Bearer ' + options.token;
   if (options.authorization) headers.authorization = options.authorization;
-  if (options.body !== undefined) headers['content-type'] = 'application/json';
+  if (options.body !== undefined || options.rawBody !== undefined) headers['content-type'] = 'application/json';
+  if (options.signature) headers['stripe-signature'] = options.signature;
+  if (options.idempotencyKey) headers['idempotency-key'] = options.idempotencyKey;
 
   const response = await fetch(baseUrl + endpoint, {
     method,
     headers,
-    ...(options.body !== undefined ? { body: JSON.stringify(options.body) } : {}),
+    ...(options.rawBody !== undefined
+      ? { body: options.rawBody }
+      : options.body !== undefined ? { body: JSON.stringify(options.body) } : {}),
   });
   const text = await response.text();
   return { status: response.status, body: text ? JSON.parse(text) : null };
@@ -285,6 +451,8 @@ after(async () => {
 
 beforeEach(() => {
   tables = clone(baseTables);
+  stripeState.sessions.length = 0;
+  stripeState.refunds.length = 0;
 });
 
 describe('customer order history', () => {
@@ -663,6 +831,7 @@ describe('order cancellation and status management', () => {
 
   it('allows admins to list orders, advance valid states, and read status history', async () => {
     const admin = tokenFor(ids.alice, 'admin');
+    tables.payments.push({ id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd', order_id: ids.aliceOrder, payment_status: 'succeeded' });
     const list = await request('GET', '/api/admin/orders?page=1&limit=10&status=pending', { token: admin });
     const advance = await request('PATCH', '/api/admin/orders/' + ids.aliceOrder + '/status', {
       token: admin, body: { status: 'processing', note: 'Packed' },
@@ -716,6 +885,169 @@ describe('order cancellation and status management', () => {
     });
     assert.equal(invalidId.status, 400);
     assert.equal(invalidNote.status, 400);
+  });
+});
+
+describe('Stripe payment flow', () => {
+  const sessionKey = 'aaaaaaaa-0000-4000-8000-000000000001';
+
+  it('creates an idempotent USD checkout session from the stored order total', async () => {
+    const response = await request('POST', '/api/orders/' + ids.aliceOrder + '/checkout-session', {
+      token: tokenFor(ids.alice), idempotencyKey: sessionKey,
+    });
+    const retry = await request('POST', '/api/orders/' + ids.aliceOrder + '/checkout-session', {
+      token: tokenFor(ids.alice), idempotencyKey: sessionKey,
+    });
+
+    assert.equal(response.status, 201);
+    assert.equal(response.body.checkout_url, 'https://checkout.stripe.test/session/1');
+    assert.match(response.body.payment_id, /^[0-9a-f-]{36}$/i);
+    assert.equal(stripeState.sessions.length, 1);
+    assert.equal(stripeState.sessions[0].params.line_items[0].price_data.unit_amount, 1250);
+    assert.equal(stripeState.sessions[0].params.line_items[0].price_data.currency, 'usd');
+    assert.equal(retry.body.payment_id, response.body.payment_id);
+    assert.equal(retry.body.checkout_url, response.body.checkout_url);
+  });
+
+  it('prevents another customer or an unpaid order without a valid idempotency key from opening checkout', async () => {
+    const foreign = await request('POST', '/api/orders/' + ids.aliceOrder + '/checkout-session', {
+      token: tokenFor(ids.bob), idempotencyKey: sessionKey,
+    });
+    const missingKey = await request('POST', '/api/orders/' + ids.aliceOrder + '/checkout-session', {
+      token: tokenFor(ids.alice),
+    });
+
+    assert.equal(foreign.status, 404);
+    assert.equal(missingKey.status, 400);
+    assert.equal(stripeState.sessions.length, 0);
+  });
+
+  it('processes payment webhooks once and only marks a matching paid session successful', async () => {
+    const checkout = await request('POST', '/api/orders/' + ids.aliceOrder + '/checkout-session', {
+      token: tokenFor(ids.alice), idempotencyKey: sessionKey,
+    });
+    const session = stripeState.sessions[0];
+    const event = {
+      id: 'evt_test_paid', type: 'checkout.session.completed',
+      data: { object: {
+        id: session.id, metadata: session.params.metadata, amount_total: 1250,
+        currency: 'usd', payment_status: 'paid', payment_intent: 'pi_test_paid',
+      } },
+    };
+    const webhook = () => request('POST', '/api/payments/stripe/webhook', {
+      rawBody: JSON.stringify(event), signature: 'test-signature',
+    });
+    const first = await webhook();
+    const duplicate = await webhook();
+
+    assert.equal(checkout.status, 201);
+    assert.equal(first.status, 200, JSON.stringify(first.body));
+    assert.equal(duplicate.status, 200);
+    assert.equal(tables.payments[0].payment_status, 'succeeded');
+    assert.equal(tables.payments[0].stripe_payment_intent_id, 'pi_test_paid');
+    assert.equal(tables.stripe_webhook_events.length, 1);
+  });
+
+  it('rejects invalid webhook signatures and releases reserved stock once on session expiry', async () => {
+    await request('POST', '/api/orders/' + ids.aliceOrder + '/checkout-session', {
+      token: tokenFor(ids.alice), idempotencyKey: sessionKey,
+    });
+    const session = stripeState.sessions[0];
+    const event = {
+      id: 'evt_test_expired', type: 'checkout.session.expired',
+      data: { object: { id: session.id, metadata: session.params.metadata } },
+    };
+    const invalid = await request('POST', '/api/payments/stripe/webhook', {
+      rawBody: JSON.stringify(event), signature: 'invalid-signature',
+    });
+    const first = await request('POST', '/api/payments/stripe/webhook', {
+      rawBody: JSON.stringify(event), signature: 'test-signature',
+    });
+    const duplicate = await request('POST', '/api/payments/stripe/webhook', {
+      rawBody: JSON.stringify(event), signature: 'test-signature',
+    });
+
+    assert.equal(invalid.status, 400);
+    assert.equal(first.status, 200);
+    assert.equal(duplicate.status, 200);
+    assert.equal(tables.orders.find((row) => row.id === ids.aliceOrder).status, 'cancelled');
+    assert.equal(tables.product_variants[0].stock_quantity, 3);
+    assert.equal(tables.inventory_movements.filter((row) => row.order_id === ids.aliceOrder).length, 1);
+  });
+
+  it('expires an open Stripe session before customer cancellation restores stock', async () => {
+    await request('POST', '/api/orders/' + ids.aliceOrder + '/checkout-session', {
+      token: tokenFor(ids.alice), idempotencyKey: sessionKey,
+    });
+    const response = await request('POST', '/api/orders/' + ids.aliceOrder + '/cancel', {
+      token: tokenFor(ids.alice), body: { note: 'Changed my mind' },
+    });
+
+    assert.equal(response.status, 200);
+    assert.equal(stripeState.sessions[0].status, 'expired');
+    assert.equal(tables.orders[0].status, 'cancelled');
+    assert.equal(tables.product_variants[0].stock_quantity, 3);
+  });
+
+  it('lets admins issue bounded partial and full refunds and blocks customer refund access', async () => {
+    tables.payments.push({
+      id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd', order_id: ids.aliceOrder,
+      amount_cents: 1250, currency: 'usd', payment_status: 'succeeded',
+      stripe_payment_intent_id: 'pi_test_paid',
+    });
+    const paymentId = tables.payments[0].id;
+    const customer = await request('POST', '/api/admin/payments/' + paymentId + '/refunds', {
+      token: tokenFor(ids.alice), idempotencyKey: 'aaaaaaaa-0000-4000-8000-000000000002', body: { amount_cents: 500 },
+    });
+    const partial = await request('POST', '/api/admin/payments/' + paymentId + '/refunds', {
+      token: tokenFor(ids.alice, 'admin'), idempotencyKey: 'aaaaaaaa-0000-4000-8000-000000000003', body: { amount_cents: 500 },
+    });
+    const fullRemainder = await request('POST', '/api/admin/payments/' + paymentId + '/refunds', {
+      token: tokenFor(ids.alice, 'admin'), idempotencyKey: 'aaaaaaaa-0000-4000-8000-000000000004', body: {},
+    });
+
+    assert.equal(customer.status, 403);
+    assert.equal(partial.status, 201);
+    assert.equal(partial.body.payment_status, 'partially_refunded');
+    assert.equal(fullRemainder.status, 201);
+    assert.equal(fullRemainder.body.payment_status, 'refunded');
+    assert.deepEqual(stripeState.refunds.map((refund) => refund.amount), [500, 750]);
+
+    const latePendingEvent = {
+      id: 'evt_refund_pending_late', type: 'refund.updated',
+      data: { object: {
+        id: stripeState.refunds[0].id, status: 'pending',
+        metadata: { payment_refund_id: tables.payment_refunds[0].id },
+      } },
+    };
+    const webhook = await request('POST', '/api/payments/stripe/webhook', {
+      rawBody: JSON.stringify(latePendingEvent), signature: 'test-signature',
+    });
+    assert.equal(webhook.status, 200);
+    assert.equal(tables.payment_refunds[0].refund_status, 'succeeded');
+    assert.equal(tables.payments[0].payment_status, 'refunded');
+  });
+
+  it('allows admins to list and inspect payments without exposing payments to customers', async () => {
+    tables.payments.push({ id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd', order_id: ids.aliceOrder, amount_cents: 1250, currency: 'usd', payment_status: 'succeeded' });
+    const customer = await request('GET', '/api/admin/payments', { token: tokenFor(ids.alice) });
+    const list = await request('GET', '/api/admin/payments?page=1&limit=10', { token: tokenFor(ids.alice, 'admin') });
+    const detail = await request('GET', '/api/admin/payments/' + tables.payments[0].id, { token: tokenFor(ids.alice, 'admin') });
+
+    assert.equal(customer.status, 403);
+    assert.equal(list.status, 200);
+    assert.equal(list.body.total, 1);
+    assert.equal(detail.status, 200);
+    assert.equal(detail.body.payment.order_id, ids.aliceOrder);
+  });
+
+  it('blocks admin order processing until a payment is confirmed', async () => {
+    const response = await request('PATCH', '/api/admin/orders/' + ids.aliceOrder + '/status', {
+      token: tokenFor(ids.alice, 'admin'), body: { status: 'processing' },
+    });
+
+    assert.equal(response.status, 409);
+    assert.equal(tables.orders[0].status, 'pending');
   });
 });
 

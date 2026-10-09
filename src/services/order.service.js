@@ -4,6 +4,7 @@ const HttpError = require('../utils/http-error');
 const db = require('../config/database');
 const OrderStatusHistory = require('../models/OrderStatusHistory');
 const ORDER_STATUSES = require('../utils/order-status');
+const PaymentService = require('./payment.service');
 
 const throwStatusError = (error) => {
   if (error.code === 'P0002') throw new HttpError(404, error.message);
@@ -46,8 +47,20 @@ exports.getUserOrder = async (userId, orderId) => {
   return { ...order, items };
 };
 
-exports.cancelOrder = async (orderId, actor, note) =>
-  exports.changeStatus(orderId, actor, 'cancelled', note);
+exports.cancelOrder = async (orderId, actor, note) => {
+  const expiredSession = await PaymentService.expireOpenCheckoutForOrder(orderId, actor);
+  try {
+    return await exports.changeStatus(orderId, actor, 'cancelled', note);
+  } catch (error) {
+    if (expiredSession && error instanceof HttpError && error.status === 409) {
+      const order = actor.role === 'admin'
+        ? await Order.findById(orderId)
+        : await Order.findByIdForUser(orderId, actor.id);
+      if (order?.status === 'cancelled') return order;
+    }
+    throw error;
+  }
+};
 
 exports.changeStatus = async (orderId, actor, status, note) => {
   const { data, error } = await db.rpc('change_order_status', {
